@@ -1,47 +1,102 @@
 import pytest
+
+import app as task_app
 from app import app, tasks
+
 
 @pytest.fixture
 def client():
+    """Provide a Flask test client."""
     app.config['TESTING'] = True
     with app.test_client() as client:
         yield client
 
+
 @pytest.fixture(autouse=True)
 def reset_tasks():
+    """Reset task storage and identifiers before each test."""
     tasks.clear()
     tasks.extend([
         {"id": 1, "title": "Project-1 Report"},
         {"id": 2, "title": "Project-2 MMFs"}
     ])
+    task_app.next_id = 3
+
 
 def test_index(client):
+    """Render the task tracker page."""
     response = client.get('/')
     assert response.status_code == 200
     assert b"Task Tracker" in response.data
 
-def test_get_tasks(client):
+
+def test_get_tasks_includes_medium_for_legacy_tasks(client):
+    """Return Medium for stored tasks without a priority."""
     response = client.get('/api/tasks')
+
     assert response.status_code == 200
     data = response.get_json()
     assert len(data) == 2
+    assert all(task['priority'] == 'Medium' for task in data)
+
+
+@pytest.mark.parametrize('priority', ['Low', 'Medium', 'High'])
+def test_add_task_accepts_each_priority(client, priority):
+    """Create a task with each allowed priority value."""
+    response = client.post(
+        '/api/tasks',
+        json={"title": "Prioritized task", "priority": priority}
+    )
+
+    assert response.status_code == 201
+    created_task = response.get_json()
+    assert created_task['priority'] == priority
+
+    get_response = client.get('/api/tasks')
+    stored_task = get_response.get_json()[-1]
+    assert stored_task['priority'] == priority
+
+
+def test_add_task_defaults_to_medium_priority(client):
+    """Default a task's priority to Medium when it is omitted."""
+    response = client.post('/api/tasks', json={"title": "Default task"})
+
+    assert response.status_code == 201
+    assert response.get_json()['priority'] == 'Medium'
+
+
+def test_add_task_rejects_invalid_priority(client):
+    """Reject priorities outside the allowed priority values."""
+    response = client.post(
+        '/api/tasks',
+        json={"title": "Invalid task", "priority": "Urgent"}
+    )
+
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
 
 def test_add_task_success(client):
+    """Create a task while preserving the existing creation behavior."""
     response = client.post('/api/tasks', json={"title": "Test new task"})
     assert response.status_code == 201
     assert response.get_json()['title'] == "Test new task"
+    assert response.get_json()['priority'] == "Medium"
     get_response = client.get('/api/tasks')
     assert len(get_response.get_json()) == 3
 
+
 def test_add_task_missing_title(client):
+    """Reject task creation requests without a title."""
     response = client.post('/api/tasks', json={"wrong_key": "value"})
     assert response.status_code == 400
     assert "error" in response.get_json()
     response2 = client.post('/api/tasks', json={})
     assert response2.status_code == 400
 
+
 def test_delete_task(client):
-    """Test deleting an existing task."""
+    """Delete an existing task."""
     response = client.delete('/api/tasks/1')
     assert response.status_code == 200
     get_response = client.get('/api/tasks')
